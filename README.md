@@ -1,2 +1,2 @@
 # ocr_sudoku_solver
-first commit
+basic Makefile and main.c added
