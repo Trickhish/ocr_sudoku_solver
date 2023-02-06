@@ -8,11 +8,11 @@ LDLIBS = `pkg-config --libs sdl2 SDL2_image` -lm
 
 all: main
 
-SRC = treat.c main.c
+SRC = treat.c main.c grid_detection.c
 OBJ = ${SRC:.c=.o}
 EXE = ${SRC:.c=}
 
-main: treat.o main.o
+main: treat.o main.o grid_detection.o
 
 .PHONY: clean
 

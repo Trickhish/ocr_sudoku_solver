@@ -4,11 +4,150 @@
 #include <SDL2/SDL_image.h>
 #include "treat.h"
 
-#include <SDL2/SDL.h>
-#include <stdbool.h>
+#define CLAMP(x, low, high) (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-void erosion(SDL_Surface* image) {
-    
+void sharpen(SDL_Surface *image) {
+    Uint32 *pixels = (Uint32 *)image->pixels;
+    int width = image->w;
+    int height = image->h;
+    Uint32 *temp_pixels = (Uint32 *)malloc(width * height * sizeof(Uint32));
+
+    for (int y = 1; y < height - 1; y++) {
+        for (int x = 1; x < width - 1; x++) {
+            int sum_r = 0, sum_g = 0, sum_b = 0;
+            Uint8 r[9], g[9], b[9];
+            int k = 0;
+            for (int i = -1; i <= 1; i++) {
+                for (int j = -1; j <= 1; j++) {
+                    Uint8 r_temp, g_temp, b_temp;
+                    SDL_GetRGB(pixels[(y + i) * width + x + j], image->format, &r_temp, &g_temp, &b_temp);
+                    r[k] = r_temp;
+                    g[k] = g_temp;
+                    b[k] = b_temp;
+                    k++;
+                }
+            }
+            sum_r = -r[0] - r[2] - r[6] - r[8] + 5 * r[1] + 5 * r[3] + 5 * r[5] + 5 * r[7];
+            sum_g = -g[0] - g[2] - g[6] - g[8] + 5 * g[1] + 5 * g[3] + 5 * g[5] + 5 * g[7];
+            sum_b = -b[0] - b[2] - b[6] - b[8] + 5 * b[1] + 5 * b[3] + 5 * b[5] + 5 * b[7];
+            double ch = 0.05;
+            temp_pixels[y * width + x] = SDL_MapRGB(image->format, CLAMP(sum_r*ch, 0, 255), CLAMP(sum_g*ch, 0, 255), CLAMP(sum_b*ch, 0, 255));
+        }
+    }
+    memcpy(pixels, temp_pixels, width * height * sizeof(Uint32));
+    free(temp_pixels);
+}
+
+void dilation(SDL_Surface *image, int size) {
+    Uint32 *pixels = (Uint32 *)image->pixels;
+    int width = image->w;
+    int height = image->h;
+    Uint32 *temp_pixels = (Uint32 *)malloc(width * height * sizeof(Uint32));
+
+    int half_size = size / 2;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            Uint8 max_r = 0, max_g = 0, max_b = 0;
+            for (int k = -half_size; k <= half_size; k++) {
+                for (int l = -half_size; l <= half_size; l++) {
+                    int x_k = x + k;
+                    int y_l = y + l;
+                    if (x_k >= 0 && x_k < width && y_l >= 0 && y_l < height) {
+                        Uint8 r, g, b;
+                        SDL_GetRGB(pixels[y_l * width + x_k], image->format, &r, &g, &b);
+                        max_r = MAX(max_r, r);
+                        max_g = MAX(max_g, g);
+                        max_b = MAX(max_b, b);
+                    }
+                }
+            }
+            temp_pixels[y * width + x] = SDL_MapRGB(image->format, max_r, max_g, max_b);
+        }
+    }
+    memcpy(pixels, temp_pixels, width * height * sizeof(Uint32));
+    free(temp_pixels);
+}
+
+void contrast(SDL_Surface *image, double contrast) {
+    Uint32 *pixels = (Uint32 *)image->pixels;
+    int width = image->w;
+    int height = image->h;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            Uint8 r, g, b;
+            SDL_GetRGB(pixels[y * width + x], image->format, &r, &g, &b);
+            r = (Uint8)CLAMP(((double)r - 128.0) * contrast + 128.0, 0, 255);
+            g = (Uint8)CLAMP(((double)g - 128.0) * contrast + 128.0, 0, 255);
+            b = (Uint8)CLAMP(((double)b - 128.0) * contrast + 128.0, 0, 255);
+            pixels[y * width + x] = SDL_MapRGB(image->format, r, g, b);
+        }
+    }
+}
+
+void otsu_threshold(SDL_Surface *image) {
+    int histogram[256] = {0};
+    int total = image->w * image->h;
+    Uint32* pixels = image->pixels;
+
+    for (int y = 0; y < image->h; y++) {
+        for (int x = 0; x < image->w; x++) {
+            Uint32 pixel = pixels[y * image->w + x];
+
+            //Uint8 gray = (pixel & 0xff) + ((pixel >> 8) & 0xff) + ((pixel >> 16) & 0xff);
+            //gray /= 3;
+            Uint8 gray = 0.3 * (pixel & 0xff) + 0.59 * ((pixel >> 8) & 0xff) + 0.11 * ((pixel >> 16) & 0xff);
+
+            histogram[gray]++;
+        }
+    }
+
+    // Calculate probability of each gray level
+    float prob[256];
+    for (int i = 0; i < 256; i++) {
+        prob[i] = (float)histogram[i] / total;
+    }
+
+    // Calculate cumulative mean
+    float omega[256];
+    omega[0] = prob[0];
+    for (int i = 1; i < 256; i++) {
+        omega[i] = omega[i - 1] + prob[i];
+    }
+
+    // Calculate cumulative mean of the classes between class means
+    float micro[256];
+    micro[0] = 0;
+    for (int i = 1; i < 256; i++) {
+        micro[i] = micro[i - 1] + i * prob[i];
+    }
+
+    // Determine threshold
+    float max_sigma = -1;
+    int threshold = 0;
+    for (int i = 0; i < 256; i++) {
+        float sigma = powf(micro[255] * omega[i] - micro[i], 2) / (omega[i] * (1 - omega[i]));
+        if (sigma > max_sigma) {
+            max_sigma = sigma;
+            threshold = i;
+        }
+    }
+
+    // Binarize image
+    for (int y = 0; y < image->h; y++) {
+        for (int x = 0; x < image->w; x++) {
+            Uint32 pixel = pixels[y * image->w + x];
+
+            //Uint8 gray = (pixel & 0xff) + ((pixel >> 8) & 0xff) + ((pixel >> 16) & 0xff);
+            //gray /= 3;
+            Uint8 gray = 0.3 * (pixel & 0xff) + 0.59 * ((pixel >> 8) & 0xff) + 0.11 * ((pixel >> 16) & 0xff);
+            int v = gray<threshold ? 0 : 255;
+
+            Uint32 color = SDL_MapRGB(image->format, v, v, v);
+            pixels[y * image->w + x] = color;
+        }
+    }
 }
 
 void gaussian_filter(SDL_Surface *imageSurface, int blur_extent) //This manipulates with SDL_Surface and gives it box blur effect
@@ -184,22 +323,6 @@ void grayscale_convert(SDL_Surface* image) {
     SDL_UnlockSurface(image);
 }
 
-void histo(unsigned int histo[256], unsigned w,
-           unsigned h, unsigned int image[w][h]) {
-  for (unsigned int i = 0; i < w; i++)
-    for (unsigned int j = 0; j < h; j++)
-      histo[image[i][j]] += 1;
-}
-
-void otsu_threshold() {
-    int h[256];
-    for (unsigned int i = 0; i < w; i++)
-        for (unsigned int j = 0; j < h; j++)
-            h[image[i][j]] += 1;
-        }
-    }
-}
-
 void threshold(SDL_Surface* image, int nth) {
     if (SDL_LockSurface(image) < 0) {
         errx(1, "Error locking surface: %s\n", SDL_GetError());
@@ -223,3 +346,28 @@ void threshold(SDL_Surface* image, int nth) {
     SDL_UnlockSurface(image);
 }
 
+SDL_Surface* resize_image(SDL_Surface *image, int new_width, int new_height) {
+    SDL_Surface *resized = SDL_CreateRGBSurface(0, new_width, new_height, 32, 0, 0, 0, 0);
+    if (resized == NULL) {
+        return NULL;
+    }
+
+    double x_ratio = (double)image->w / new_width;
+    double y_ratio = (double)image->h / new_height;
+    double px, py;
+
+    Uint32* pixels = image->pixels;
+    Uint32* pixelsr = resized->pixels;
+
+    for (int y = 0; y < new_height; y++) {
+        for (int x = 0; x < new_width; x++) {
+            px = floor(x * x_ratio);
+            py = floor(y * y_ratio);
+
+            //Uint32 pix = pixels[py * image->w + px];
+            //pixelsr[y * resized->w + x] = pix;
+        }
+    }
+
+    return resized;
+}
