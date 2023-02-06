@@ -1,0 +1,1 @@
+treat.o: treat.c
